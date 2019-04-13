@@ -1,0 +1,454 @@
+---
+title: "Project 4: Spam Filter"
+author:
+- Stephen Jones
+date: "April 7, 2019"
+output:
+  rmdformats::readthedown:
+    code_folding: hide
+    gallery: no
+    highlight: tango
+    lightbox: yes
+    self_contained: yes
+    thumbnails: yes
+  html_document:
+    code_folding: hide
+    df_print: paged
+---
+
+<style type="text/css">
+pre {
+  max-height: 150px;
+  float: left;
+  width: 100%;
+  overflow-y: auto;
+}
+pre.r {
+max-height: none;
+}
+h1.title {
+  color: DarkBlue;
+  font-weight: bold;
+}
+h1 { /* Header 1 */
+  color: DarkBlue;
+  font-weight: bold;
+}
+h2 { /* Header 2 */
+  color: DarkBlue;
+  font-weight: bold;
+}
+h3 { /* Header 3 */
+  color: DarkBlue;
+  font-weight: bold;
+}
+h4 { /* Header 3 */
+  color: DarkBlue;
+  font-weight: bold;
+}
+</style>  
+
+#Data  
+
+The two files selected are located here:  
+
+https://spamassassin.apache.org/old/publiccorpus/20021010_spam.tar.bz2  
+https://spamassassin.apache.org/old/publiccorpus/20030228_easy_ham.tar.bz2  
+
+To begin, the following packages are loaded: `tidyverse`, `tidytext`, `stringr`, `caret`, `tm`.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+rm(list=ls())
+
+library(tidyverse)
+library(tidytext)
+library(stringr)
+library(caret)
+library(tm)
+
+```
+
+Spam and ham emails are loaded separately as simple text files, then combined for cleaning.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+ham<-list.files('C:/MSDS/spamham/easy_ham')
+ham2<-paste('C:/MSDS/spamham/easy_ham/',ham,sep='')
+spam<-list.files('C:/MSDS/spamham/spam')
+spam2<-paste('C:/MSDS/spamham/spam/',spam,sep='')
+
+mlist<-append(ham2,spam2)
+
+emails <- data.frame(files= sapply(mlist, FUN = function(x)readChar(x, file.info(x)$size)),
+                  stringsAsFactors=FALSE)
+```
+
+The row names are captured with the package `data.table`; slow and methodical cleaning follows. While this can be accomplished with fewer lines of code, the result was checked after each step. Ultimately a list of single-word tokens is developed for each document.  
+
+
+```{r message=FALSE,warning=FALSE,include=FALSE}
+
+library(data.table)
+setDT(emails, keep.rownames = TRUE)[]
+
+colnames(emails)[1]<-"ID"
+
+#remove two files which contain no words, just numbers with alphanumeric jumbles
+emails<-emails[which(emails$ID!='C:/MSDS/spamham/easy_ham/cmds'&emails$ID!='C:/MSDS/spamham/spam/0000.7b1b73cf36cf9dbc3d64e3f2ee2b91f1'),]
+
+#set value of spam to 1 for spam, o for ham
+emails$spam <- ifelse(grepl('easy_ham',emails$ID)==TRUE,0,1)
+
+#omit intro text before Subject: line
+emails$files<-sub('From.*Subject: ', '', emails$files)
+
+#omit email tags, assorted html tags
+emails$files<-gsub("</?[^>]+>", "", emails$files)
+
+#omit email addresses
+emails$files<-gsub("\\S+@\\S+","",emails$files)
+
+#omit charset tag
+emails$files<-gsub("\\S*charset\\S*","",emails$files)
+
+#omit List- heading
+emails$files<-gsub("\\S*List-\\S*","",emails$files)
+
+#omit words with colons
+emails$files<-gsub("\\S*:\\S*","",emails$files)
+
+#separate words in which a capital letter exits without a space before it
+emails$files<-gsub("([[:upper:]])([[:upper:]][[:lower:]])", "\\1 \\2", emails$files)
+
+#remove all character clusters without at least one vowel
+emails$files<-sapply(str_extract_all(emails$files,"(\\S*[AEIOUaeiou]+\\S*)"),toString)
+emails$files<-gsub(",","",emails$files)
+
+#remove special characters by replacing with apostrophe, then removing apostrophe
+emails$files<-gsub("[^0-9A-Za-z///' ]","'" , emails$files,ignore.case = TRUE)
+emails$files <- gsub("''","" , emails$files,ignore.case = TRUE)
+
+#remove words with a repeated alphabetical character repeated more than2 times
+emails$files<-gsub('\\S*([[:alpha:]])\\1{2,}\\S*', '', emails$files)
+
+#omit commas
+emails$files<-gsub("'"," ",emails$files)
+
+#convert to tibble
+emails<-as_tibble(emails)
+
+#words to omit
+omit<-c("cdo","cbyi","xyak","perl","pgp","rpm","exmh","utf","kernel","pgi","atol","sur","kabila","xml","enenkio","mlm","mladi","jodi","lerami","lerctr","Thu","Aug","Mon","Tue","Wed","Fri","Sat","Sun","Jan","Feb","Mar","Apr","May","Jun","Jul","Sep","Nov","Dec","text/plain","qogic","ciagic","awmezg","ehlbh","rohit","khare","header","cuxrm","mladih","arial","marriott","monei")
+
+#create token list
+email_tokens <- emails %>%
+  unnest_tokens(output = word, input = files) %>%
+  #remove numbers, other shorter words, special characters,etc
+  filter(!str_detect(word, "^\\b[[:alpha:]]{11,}\\b$")) %>%
+  filter(!str_detect(word, "^[0-9]*$")) %>%
+  filter(!str_detect(word, "^[0-9]*[.][0-9]*$")) %>%
+  filter(!str_detect(word, "^[_]*$")) %>%
+  filter(!str_detect(word, "^\\w*[0-9]+\\w*\\s*$")) %>%
+  filter(!str_detect(word, "^[0-9]*[,][0-9]*$")) %>%
+  filter(!str_detect(word, "^[0-9]*[,][0-9]*[,][0-9]*$")) %>%
+  filter(!str_detect(word, "^[0-9]*[.][0-9]*[.][0-9]*$")) %>%
+  filter(!str_detect(word, "^[a-zA-Z0-9_]*[.][a-zA-Z0-9_]*$")) %>%
+  filter(!str_detect(word, "^[0-9]*[.][0-9]*[.][0-9]*[.][0-9]*$")) %>%
+  filter(!str_detect(word, "^[a-z]*[:][a-z]*$")) %>%
+  filter(!str_detect(word, "\\S+icag\\S*")) %>%
+  filter(!str_detect(word, "\\S+wi\\s*")) %>%
+  filter(!str_detect(word, "\\S*atol\\S*")) %>%
+  filter(!str_detect(word, "\\S*dqog\\S*")) %>%
+  filter(!str_detect(word, "jodi")) %>%
+  filter(!str_detect(word, "^?(.*)[.][a-z]+")) %>%
+  filter(!str_detect(word, "^\\b\\w{1,4}\\b$")) %>%
+  filter(!str_detect(word, "\\b.*agicb.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*hermio.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*cartridg.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*esmtp.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*amavisd.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*intro.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*milter.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*printabl.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*nextpart.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*click.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*remov.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*microsoft.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*outlook.*\\b")) %>%
+  filter(!str_detect(word, "\\b.*monei.*\\b")) %>%
+  filter(!str_detect(word, "\\bfs.*\\b")) %>%
+  filter(!word %in% omit) %>%
+  #stop words
+  anti_join(stop_words)%>%
+  #stemming
+  mutate(word = SnowballC::wordStem(word))%>%
+  #remove more words
+  filter(!str_detect(word, "\\b.*monei.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*plain.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*normal.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*mix.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*quot.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*encod.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*multipart.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*multi.*\\b"))%>%
+  filter(!str_detect(word, "\\b.*contact.*\\b"))
+
+```  
+
+A document-term matrix is created. Sparse terms are eliminated with `removeSparseTerms` function. The weighting option is set to term frequency-inverse document frequency, which increases with frequency per document, but is adjusted for prevalence in all documents in the analysis.  
+
+```{r message=FALSE,warning=FALSE}
+
+email_tokens %>%
+  #get count
+  count(ID, word) %>%
+  #document term matrix created with tf-idf
+  cast_dtm(document = ID, term = word, value = n,
+           weighting = tm::weightTfIdf)
+
+emails_dtm <- email_tokens %>%
+   count(ID,word) %>%
+   cast_dtm(document=ID,term = word, value = n)
+
+
+#omit sparse words
+emailsNoSparse_dtm <- removeSparseTerms(emails_dtm, sparse = .99)
+
+
+
+```  
+
+Word frequencies are plotted for both the spam and ham (<i>group by spam = 0,1</i>).  
+
+
+```{r message=FALSE,warning=FALSE,fig.align="center"}
+
+emails_tfidf <- email_tokens %>%
+   count(spam, word) %>%
+   bind_tf_idf(term = word, document = spam, n = n)
+
+
+#sort, convert to factor
+plot_emails <- emails_tfidf %>%
+  arrange(desc(tf_idf)) %>%
+  mutate(word = factor(word, levels = rev(unique(word))))
+
+#plot 10 most frequent spam and ham tokens
+plot_emails %>%
+  filter(spam %in% c(0, 1)) %>%
+  mutate(spam = factor(spam, levels = c(0, 1),
+                        labels = c("Ham", "Spam"))) %>%
+  group_by(spam) %>%
+  top_n(10) %>%
+  ungroup() %>%
+  ggplot(aes(word, tf_idf)) +
+  geom_col() +
+  labs(x = NULL, y = "tf-idf") +
+  facet_wrap(~spam, scales = "free") +
+  coord_flip()
+
+```  
+
+The matrix is converted to a dataframe; a seed is set and a random selection of cases form the training dataset and the testing dataset. A random sample of 70% of the documents forms the training set with the remaining rows designated for testing the model. Spam classification variables are separated from the training and testing datasets.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+#form data frame with cleaned tokens and indicator variable
+CleanEmail<-data.frame(as.matrix(emailsNoSparse_dtm),emails$spam)
+
+#set seed to maintain random sample consistency; make 70-30 split
+set.seed(1973)
+rownums<-sample(nrow(CleanEmail),nrow(CleanEmail)*.7)
+
+#form training set and test set
+trainSet<-CleanEmail[rownums,]
+trainSet_Pre<-trainSet[,1:ncol(trainSet)-1]
+testSet<-CleanEmail[-rownums,]
+testSet_Pre<-testSet[,1:ncol(testSet)-1]
+
+```  
+
+
+#Model 1 - Random Forest  
+
+The first model was created using the Random Forest algorithm, with `ntrees` set to 50. Additionally, out-of-bag estimate (`oob`) is set as the method of `trainControl` with other options left to their default settings.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+#train by comparing dataframe to spam indicator
+model1 <- train(x = trainSet_Pre,
+                     y = factor(trainSet$emails.spam),
+                     method = "rf",
+                     ntree = 50,
+                     trControl = trainControl(method = "oob"))
+
+
+#view result
+model1$finalModel
+ 
+
+```  
+
+The created model is tested against the testing dataset. Accuracy is calculated.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+#test model
+predictions<-predict(model1,newdata = testSet_Pre)
+
+#calculate accuracy
+compare<-data.frame(testSet$emails.spam,predictions)
+compare$correct<-ifelse(compare$testSet.emails.spam == compare$predictions,1,0)
+accuracy<-round(sum(compare$correct)*100/nrow(compare),1)
+
+cat("Accuracy:",accuracy,"%")
+
+```  
+
+Importance of each term is plotted; further data cleaning is performed if necessary and the model trained again.  
+
+
+```{r message=FALSE,warning=FALSE,fig.align='center'}
+
+#grab importance via varImp
+imp<-varImp(model1,scale=FALSE)
+
+imp2<-data.frame(imp["importance"])
+setDT(imp2, keep.rownames = TRUE)[]
+imp2<-imp2[which(imp2$Overall>9),]
+colnames(imp2)[1]<-"word"
+colnames(imp2)[2]<-"importance"
+
+ggplot(imp2, aes(x=reorder(word, importance), weight=importance, fill=as.factor(importance)))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```  
+
+#Model 2 - Stochastic Gradient Boosting  
+
+In order to train a model with the method `gbm` I loaded the package of the same name. The `trainControl` method is set as `cv`, `number` of folds is set to `3`, `classProbs` is set to `TRUE` and `summaryFunction` set as `twoClassSummary`. Since the classification of spam vs ham is a two-class problem, I use `metric="ROC"` in the `train` function; according to documentation, `caret` will calculate the area under the ROC metric only for 2-class models.  
+
+
+```{r message=FALSE,warning=FALSE,fig.align='center'}
+
+library('gbm')
+
+#recode spam indicator variable
+trainSet$emails.spam<-ifelse(trainSet$emails.spam==1,"spam","ham")
+testSet$emails.spam<-ifelse(testSet$emails.spam==1,"spam","ham")
+
+ctrl <- trainControl(method='cv',
+                     number=3,
+                     returnResamp='none',
+                     summaryFunction = twoClassSummary, 
+                     classProbs = TRUE)
+
+model2 <- train(x = trainSet_Pre,
+                y = factor(trainSet$emails.spam),
+                method='gbm',
+                trControl=ctrl,
+                metric = "ROC",
+                preProc = c("center", "scale"))
+
+summary(model2)
+
+print(model2)
+
+```  
+
+Get "raw" probability and calculate accuracy.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+#use another method to get accuracy, confirm with process before.
+predictions2 <- predict(object=model2, testSet_Pre, type='raw')
+
+print(postResample(pred=predictions2, obs=as.factor(testSet$emails.spam)))
+
+#calculate accuracy using a second method to confirm
+compare2<-data.frame(testSet$emails.spam,predictions2)
+compare2$correct<-ifelse(compare2$testSet.emails.spam == compare2$predictions,1,0)
+accuracy2<-round(sum(compare2$correct)*100/nrow(compare2),1)
+
+cat("Accuracy confirmed:",accuracy2,"%")
+
+```  
+
+Use package pROC to calculate AUC score. According to https://developers.google.com/machine-learning/crash-course/classification/roc-and-auc:  
+"AUC ranges in value from 0 to 1. A model whose predictions are 100% wrong has an AUC of 0.0; one whose predictions are 100% correct has an AUC of 1.0."  
+
+In simplest terms, it is a measure of model performance. Using the package `pROC` I calculated AUC for the second model below using class probabilities from training.  
+
+
+```{r message=FALSE,warning=FALSE}
+
+#obtain probabilities
+predictions2b <- predict(object=model2, testSet_Pre, type='prob')
+
+library(pROC)
+
+#get AUC score "AUC ranges between 0.5 and 1, where 0.5 is random and 1 is perfect" from https://amunategui.github.io/binary-outcome-modeling/
+auc <- roc(ifelse(testSet$emails.spam=="spam",1,0), predictions2b[[2]])
+print(auc$auc)
+
+
+```  
+
+Plotting the importance of each term allows for refinement in cleaning; the most important terms are scrutinized for authenicity.  
+
+```{r message=FALSE,warning=FALSE,fig.align='center'}
+
+#grab importance via varImp
+imp<-varImp(model2,scale=FALSE)
+
+imp2<-data.frame(imp["importance"])
+setDT(imp2, keep.rownames = TRUE)[]
+imp2<-imp2[which(imp2$Overall>15),]
+colnames(imp2)[1]<-"word"
+colnames(imp2)[2]<-"importance"
+
+ggplot(imp2, aes(x=reorder(word, importance), weight=importance, fill=as.factor(importance)))+
+  geom_bar()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```  
+
+
+#Conclusions  
+
+A more rigorous approach would yield helpful insights into the options associated with the models above; adjusting the model parameters in the `train` function will alter the result. My analysis proved the Random Forest model made more accurate predictions. The model should be tested against other sets of spam and ham to assess capability.  
+
+#Sources  
+
+The following sites were useful resources in developing this analysis:
+
+use of alternative models and methods with caret
+https://amunategui.github.io/binary-outcome-modeling/
+
+general use of caret
+https://cfss.uchicago.edu/notes/supervised-text-classification/
+
+general knowledge and methods
+https://topepo.github.io/caret/variable-importance.html
+https://topepo.github.io/caret/model-training-and-tuning.html
+
+https://www.tidytextmining.com/nasa.html
+
+https://www.rdocumentation.org/packages/caret/versions/4.47/topics/train
+https://www.rdocumentation.org/packages/caret/versions/5.05.004/topics/predict.train
+
+https://www.analyticsvidhya.com/blog/2016/12/practical-guide-to-implement-machine-learning-with-caret-package-in-r-with-practice-problem/
+
+http://www.rebeccabarter.com/blog/2017-11-17-caret_tutorial/
+
+https://github.com/topepo/caret/issues/141
+
+https://www.hvitfeldt.me/blog/binary-text-classification-with-tidytext-and-caret/
